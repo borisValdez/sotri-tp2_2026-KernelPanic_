@@ -95,4 +95,80 @@ void TIM1_UP_TIM10_IRQHandler(void)
   HAL_TIM_IRQHandler(&htim1);
 }
 
+## Actividad 02 - Paso 08: Análisis del Código de la Aplicación (`app/` y `task/`)
+
+---
+
+## 1. Análisis Funcional de los Archivos de la Aplicación
+
+### A. `app.c` (Inicializador de la Aplicación)
+Es el módulo encargado de orquestar la creación de los componentes de software de alto nivel una vez que el hardware básico ya fue inicializado. 
+* **Función Principal (`app_init`):** Invoca a `app_it_init()` para preparar las interrupciones de la aplicación. Luego, utiliza la API nativa de FreeRTOS (`xTaskCreate`) para instanciar las dos tareas principales del sistema: `task_btn` ("Task BTN") y `task_led` ("Task LED").
+* **Configuración de Tareas:** A ambas tareas se les asigna una prioridad de `tskIDLE_PRIORITY + 1ul` (prioridad baja, justo por encima de la tarea inactiva) y se definen sus tamaños de pila (*Stack Depth*) como el doble del mínimo (`2 * configMINIMAL_STACK_SIZE`). El archivo hace uso de `configASSERT(pdPASS == ret)` para detener inmediatamente la CPU si el sistema operativo se queda sin memoria RAM (Heap) al intentar crear estos hilos.
+
+### B. `app_it.c` (Manejador de Interrupciones de la Aplicación)
+Este archivo centraliza las funciones de respuesta a eventos externos por interrupción que pertenecen a la lógica de la aplicación.
+* **Mecanismo de Captura:** Implementa la función de retrollamada de la HAL de ST: `HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)`. Cuando se presiona un botón físico configurado en modo interrupción externa (EXTI), el hardware salta aquí. 
+* **Lógica Interna:** El código evalúa si el pin que generó la interrupción coincide con el identificador del botón (`BTN_Pin`). Aunque en esta etapa base el botón se procesa principalmente por consulta periódica (*polling*), este archivo deja preparada la estructura para la migración hacia interrupciones en la Actividad 04.
+
+### C. `task_btn.c` (Tarea de Gestión del Botón)
+Implementa el ciclo de vida y comportamiento del botón de la placa de desarrollo. Su objetivo principal es leer el estado físico del pin del botón, filtrar el ruido eléctrico mediante software (*anti-bounce*) y notificar las pulsaciones válidas.
+* **Algoritmo:** Utiliza una estructura de datos interna (`task_btn_dta`) que almacena el estado actual de la máquina de estados, el evento detectado y una marca de tiempo (*tick*) obtenida con `xTaskGetTickCount()`. Cuando detecta una transición estable y válida, registra el log `BTN PRESSED` mediante el logger de la aplicación y despacha el evento de parpadeo invocando a `put_event_task_led(EV_LED_BLINK)`.
+
+### D. `task_led.c` (Tarea de Gestión del LED)
+Representa el hilo encargado de controlar el actuador visual (el LED indicador de la placa).
+* **Control de Tiempo Preciso:** En su bucle infinito, la tarea utiliza `vTaskDelayUntil(&last_wake_time, LED_TICK_DEL_MAX)`, asegurando que la tarea se ejecute de manera estrictamente periódica cada 50 milisegundos, sin importar el tiempo de procesamiento interno que consuma la CPU.
+* **Lógica:** Evalúa cíclicamente los cambios en la estructura de datos `task_led_dta`. Si el indicador `flag` es verdadero y el evento coincide con `EV_LED_BLINK`, cambia su estado interno y comanda al hardware mediante `HAL_GPIO_WritePin` para encender o apagar el pin físico asociado al LED.
+
+### E. `task_led_interface.c` (Interfaz de Comunicación)
+Este archivo actúa como una capa de abstracción o "puente" para que otras tareas interactúen con el LED sin necesidad de conocer los detalles de bajo nivel de su máquina de estados.
+* **Funcionamiento:** Implementa la función pública `put_event_task_led(task_led_ev_t event)`. Cuando es llamada (por ejemplo, desde `task_btn.c`), escribe directamente el evento recibido en la variable global `task_led_dta.event` y cambia el valor de `task_led_dta.flag = true` para indicarle a la tarea del LED que tiene un comando pendiente por procesar.
+
+### F. `freertos.c` (Hooks y Ganchos del Sistema Operativo)
+Contiene las funciones complementarias de diagnóstico y telemetría de FreeRTOS que se ejecutan bajo condiciones específicas del sistema:
+* **`vApplicationIdleHook`:** Se ejecuta de manera continua cada vez que no hay ninguna tarea de usuario lista para correr. Incrementa la variable global `g_task_idle_cnt`, la cual sirve para medir el porcentaje de tiempo libre o inactividad de la CPU.
+* **`vApplicationTickHook`:** Se ejecuta dentro del contexto de la interrupción del `SysTick` cada 1 ms. Incrementa el contador `g_app_tick_cnt` para métricas temporales de la aplicación.
+* **`vApplicationStackOverflowHook`:** Es un mecanismo de seguridad crítico. Si alguna de las tareas se excede del tamaño de pila asignado (`2 * configMINIMAL_STACK_SIZE`), el kernel detecta la corrupción de memoria, salta a este gancho y detiene la ejecución para evitar comportamientos erráticos.
+
+---
+
+## 2. Arquitectura de Comunicación e Interconexión entre Tareas
+
+En este proyecto base (`sotri-tp2_01-application`), el flujo de datos e instrucciones sigue un patrón de **Diseño Orientado a Eventos con Variables Globales Compartidas**.
+
+[ task_btn ] ---> Llama a ---> [ put_event_task_led() ] ---> Modifica ---> [ task_led_dta ] <--- Evalúa <--- [ task_led ]
+
+
+1. La tarea `task_btn` procesa la entrada del usuario de manera aislada.
+2. Al detectar una pulsación, delega la responsabilidad de comunicación a la función interfaz `put_event_task_led()`.
+3. Esta función modifica directamente una estructura de memoria global compartida (`task_led_dta`).
+4. En el siguiente ciclo de reactivación (cada 50 ms), la tarea `task_led` lee esa misma estructura global, detecta el cambio de bandera (`flag = true`), consume el evento y modifica el estado del periférico.
+
+---
+
+## 3. Análisis de las Máquinas de Estado (Statecharts)
+
+Ambas tareas basan su funcionamiento en el patrón de diseño de **Máquinas de Estado Ejecutadas hasta la Finalización (*Run-to-Completion Statecharts*)**.
+
+### Máquina de Estados del Botón (`task_btn.c`)
+Está diseñada para discriminar falsos contactos y ruidos eléctricos mediante transiciones temporizadas:
+* **`ST_BTN_UP` (Reposo/Suelto):** Estado inicial. El pin lee un nivel alto constante. Si se detecta un flanco descendente (`EV_BTN_DOWN`), guarda el tiempo actual del sistema operativo y transiciona a `ST_BTN_FALLING`.
+* **`ST_BTN_FALLING` (Validación de Bajada):** Espera que transcurra un tiempo de guarda máximo (`DEL_BTN_MAX`). Si al cumplirse el tiempo el botón sigue presionado, se confirma que no es un ruido eléctrico, genera el evento hacia el LED y pasa a `ST_BTN_DOWN`. Si el botón se soltó antes, asume que fue ruido y regresa a `ST_BTN_UP`.
+* **`ST_BTN_DOWN` (Presionado Estable):** Se mantiene aquí mientras el usuario sostenga el botón físico. Al detectar la liberación (`EV_BTN_UP`), guarda el tiempo y pasa a `ST_BTN_RISING`.
+* **`ST_BTN_RISING` (Validación de Subida):** Monitorea el desprendimiento del botón para evitar falsas pulsaciones dobles causadas por el rebote mecánico del resorte del pulsador. Al estabilizarse, regresa al estado de reposo `ST_BTN_UP`.
+
+### Máquina de Estados del LED (`task_led.c`)
+Es una máquina reactiva simple que responde a las solicitudes validadas por el botón:
+* **`ST_LED_OFF` (Apagado):** El LED permanece apagado. Si la bandera de la interfaz es verdadera (`flag == true`) y el evento recibido es `EV_LED_BLINK`, la tarea apaga la bandera para consumir el comando, enciende el LED físico usando la HAL, inicializa el temporizador y pasa a `ST_LED_BLINK`.
+* **`ST_LED_BLINK` (Parpadeo Cíclico):** El LED conmuta su estado de manera regular. Si se recibe un evento de apagado (`EV_LED_OFF`), apaga el periférico y regresa a `ST_LED_OFF`.
+
+---
+
+## 4. Diagnóstico Crítico: Condición de Carrera (*Race Condition*)
+
+A pesar de que el código base funciona bajo condiciones ideales de laboratorio, presenta un **defecto de diseño crítico** desde la perspectiva de los Sistemas Operativos en Tiempo Real: **La falta de exclusión mutua**.
+
+* **El Problema:** La función `put_event_task_led()` modifica las variables `task_led_dta.event` y `task_led_dta.flag` de manera directa en la memoria RAM. Al mismo tiempo, la tarea `task_led` lee y escribe sobre esos mismos campos de memoria dentro de su bucle.
+* **El Peligro (Condición de Carrera):** Si las prioridades de las tareas cambiasen o si esta función se invocara desde una rutina de interrupción (ISR) en medio de la lectura de la tarea del LED, se podría producir una **corrupción de datos**. Por ejemplo, la tarea del LED podría leer la bandera `flag = true` pero evaluar un evento incompleto o viejo si es interrumpida a mitad de la escritura.
+* **Conclusión:** Este diseño evidencia de forma didáctica por qué **no se deben utilizar variables globales desprotegidas** para comunicar tareas en un RTOS. Esto justifica y sienta las bases para las siguientes actividades del práctico, donde se reemplazará este mecanismo inseguro por primitivas seguras de FreeRTOS como **Colas de Mensajes (`Queues`)** y **Semáforos Binarios**.
 
