@@ -94,7 +94,7 @@ void TIM1_UP_TIM10_IRQHandler(void)
 {
   HAL_TIM_IRQHandler(&htim1);
 }
-
+```
 ## Actividad 02 - Paso 08: Análisis del Código de la Aplicación (`app/` y `task/`)
 
 ---
