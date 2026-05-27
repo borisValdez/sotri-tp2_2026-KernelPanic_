@@ -120,3 +120,5 @@ El comportamiento del *Scheduler* ante colas saturadas o vacías depende directa
 | **Múltiples Tareas Bloqueadas por Lectura** | Una cola vacía recibe finalmente un dato. | El kernel desbloquea de manera inmediata a **la tarea de mayor prioridad** de la lista de espera. Si las tareas poseen la misma prioridad, se desbloquea la que lleve más tiempo esperando (orden FIFO de bloqueo). |
 | **Múltiples Tareas Bloqueadas por Escritura** | Una cola llena libera un espacio (se lee un dato). | El kernel permite escribir de inmediato a **la tarea de mayor prioridad** que estaba esperando para transmitir. |
 | **Tarea Lectora de Alta Prioridad** | Lee continuamente de la cola. | Tan pronto como una tarea de menor prioridad introduce un elemento en la cola, el planificador desaloja (*preemption*) a la tarea de baja prioridad para otorgarle la CPU a la lectora de alta prioridad, procesando el mensaje en tiempo real. |
+
+

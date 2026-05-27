@@ -56,11 +56,20 @@
 
 /********************** external data declaration ****************************/
 
+/* Hacemos referencia a la cola creada globalmente en app.c */
+extern QueueHandle_t h_btn_led_q;
+
 /********************** external functions definition ************************/
 void put_event_task_led(task_led_ev_t event)
 {
-	task_led_dta.event = event;
-	task_led_dta.flag = true;
+    /* Verificamos que la cola haya sido creada correctamente antes de usarla */
+    if (h_btn_led_q != NULL)
+    {
+        /* * Enviamos el evento por valor a la cola.
+         * Usamos un timeout de 0 (no bloqueante) para que la tarea del botón
+         * nunca se quede tildada o demorada si la cola llegara a estar llena.
+         */
+        xQueueSend(h_btn_led_q, &event, 0);
+    }
 }
-
 /********************** end of file ******************************************/

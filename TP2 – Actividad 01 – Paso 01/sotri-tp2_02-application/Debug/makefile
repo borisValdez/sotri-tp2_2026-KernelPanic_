@@ -65,8 +65,8 @@ all: main-build
 main-build: sotri-tp2_02-application.elf secondary-outputs
 
 # Tool invocations
-sotri-tp2_02-application.elf sotri-tp2_02-application.map: $(OBJS) $(USER_OBJS) /home/boris/Escritorio/PdMicro_workspace/sotri-tp2_02-application/STM32F446RETX_FLASH.ld makefile objects.list $(OPTIONAL_TOOL_DEPS)
-	arm-none-eabi-gcc -o "sotri-tp2_02-application.elf" @"objects.list" $(USER_OBJS) $(LIBS) -mcpu=cortex-m4 -T"/home/boris/Escritorio/PdMicro_workspace/sotri-tp2_02-application/STM32F446RETX_FLASH.ld" --specs=nosys.specs -Wl,-Map="sotri-tp2_02-application.map" -Wl,--gc-sections -static -specs=rdimon.specs --specs=nano.specs -mfpu=fpv4-sp-d16 -mfloat-abi=hard -mthumb -Wl,--start-group -lc -lm -Wl,--end-group
+sotri-tp2_02-application.elf sotri-tp2_02-application.map: $(OBJS) $(USER_OBJS) /home/boris/Escritorio/RTOS/sotri-tp2/sotri-tp2_2026-KernelPanic_/TP2\ –\ Actividad\ 01\ –\ Paso\ 01/sotri-tp2_02-application/STM32F446RETX_FLASH.ld makefile objects.list $(OPTIONAL_TOOL_DEPS)
+	arm-none-eabi-gcc -o "sotri-tp2_02-application.elf" @"objects.list" $(USER_OBJS) $(LIBS) -mcpu=cortex-m4 -T"/home/boris/Escritorio/RTOS/sotri-tp2/sotri-tp2_2026-KernelPanic_/TP2 – Actividad 01 – Paso 01/sotri-tp2_02-application/STM32F446RETX_FLASH.ld" --specs=nosys.specs -Wl,-Map="sotri-tp2_02-application.map" -Wl,--gc-sections -static -specs=rdimon.specs --specs=nano.specs -mfpu=fpv4-sp-d16 -mfloat-abi=hard -mthumb -Wl,--start-group -lc -lm -Wl,--end-group
 	@echo 'Finished building target: $@'
 	@echo ' '
 

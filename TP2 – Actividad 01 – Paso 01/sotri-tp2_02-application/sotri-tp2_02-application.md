@@ -172,3 +172,26 @@ A pesar de que el código base funciona bajo condiciones ideales de laboratorio,
 * **El Peligro (Condición de Carrera):** Si las prioridades de las tareas cambiasen o si esta función se invocara desde una rutina de interrupción (ISR) en medio de la lectura de la tarea del LED, se podría producir una **corrupción de datos**. Por ejemplo, la tarea del LED podría leer la bandera `flag = true` pero evaluar un evento incompleto o viejo si es interrumpida a mitad de la escritura.
 * **Conclusión:** Este diseño evidencia de forma didáctica por qué **no se deben utilizar variables globales desprotegidas** para comunicar tareas en un RTOS. Esto justifica y sienta las bases para las siguientes actividades del práctico, donde se reemplazará este mecanismo inseguro por primitivas seguras de FreeRTOS como **Colas de Mensajes (`Queues`)** y **Semáforos Binarios**.
 
+
+## 5. Actividad 02 - Paso 03: Modificación del Mecanismo de Comunicación y Observaciones
+
+### A. Implementación de la Cola (Queue) en el Código
+Se eliminó el acoplamiento directo por variables globales desprotegidas entre `task_btn.c` y `task_led.c`. En su lugar, se implementó una cola nativa de FreeRTOS (`xQueueLed`) administrada mediante las siguientes primitivas:
+* **Creación:** Se instanció en `app.c` mediante `xQueueCreate(5, sizeof(task_led_ev_t))`, reservando un buffer FIFO seguro para un máximo de 5 eventos concurrentes.
+* **Transmisión (Productor):** La función de interfaz `put_event_task_led()` fue modificada para ejecutar `xQueueSend(xQueueLed, &event, 0)`. Se configuró un tiempo de espera (*Ticks to Wait*) de `0` (no bloqueante). Esto garantiza que la tarea del botón (`task_btn`) jamás quede suspendida o penalice la experiencia del usuario (latencia de UI) en caso de que la cola experimente una saturación temporal.
+* **Recepción (Consumidor):** En el bucle principal de `task_led.c`, se sustituyó la temporización rígida de `vTaskDelayUntil` por `xQueueReceive(xQueueLed, &event_rx, LED_TICK_DEL_MAX)`. 
+
+### B. Comportamiento Observado durante la Depuración (STM32)
+
+Al compilar, flashear y ejecutar el proyecto modificado utilizando el depurador y logs de la consola serial, se constataron las siguientes métricas y comportamientos dinámicos:
+
+1. **Eliminación de la Condición de Carrera (*Race Condition*):** A diferencia del Paso 01, donde la variable `task_led_dta.flag` era modificada de manera asincrónica e insegura por dos hilos concurrentes, las operaciones de lectura y escritura actuales ocurren bajo la protección interna de secciones críticas del Kernel de FreeRTOS. El acceso a la memoria compartida está completamente serializado.
+
+2. **Reactividad Inmediata ante Eventos:**
+   Cuando el sistema está en estado de reposo (`ST_LED_OFF`), la tarea del LED ya no se despierta innecesariamente cada 50 ms para evaluar una bandera falsa en RAM. En su lugar, permanece en estado **Blocked** (bloqueada eficientemente en la cola). Al presionar el botón físico, `xQueueSend` deposita el evento e inmediatamente el planificador (*Scheduler*) despierta a `task_led`, logrando un tiempo de respuesta al parpadeo prácticamente instantáneo.
+
+3. **Mantenimiento de la Periodicidad en el Parpadeo:**
+   Se comprobó que al transicionar al estado `ST_LED_BLINK`, la cola no se satura ni se desborda. Dado que el evento de parpadeo se procesa una sola vez, las reactivaciones subsiguientes de la máquina de estados ocurren por el vencimiento del *Timeout* de la función `xQueueReceive` (fijado en 50 ms a través de `LED_TICK_DEL_MAX`). Cuando el estado es "Blink" y la función retorna `pdFALSE` (indicando que no llegó un evento nuevo), la máquina de estados ejecuta con éxito la conmutación periódica del pin físico del LED.
+
+4. **Robustez ante Pulsaciones Múltiples:**
+   Al presionar el botón de forma repetida y caótica, los eventos se encolan ordenadamente en el buffer FIFO. Al ser una cola de longitud superior a 1, el sistema tolera ráfagas de eventos sin experimentar pérdidas de datos ni desbordamientos de memoria, procesando las transiciones de estado de forma determinista y secuencial.

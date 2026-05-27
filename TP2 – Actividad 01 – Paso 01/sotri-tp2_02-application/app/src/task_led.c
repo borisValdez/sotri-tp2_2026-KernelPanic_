@@ -69,39 +69,42 @@ void task_led_statechart(void);
 
 /********************** external data declaration ****************************/
 uint32_t g_task_led_cnt;
+extern QueueHandle_t h_btn_led_q;
 
 /********************** external functions definition ************************/
 /* Task LED thread */
 void task_led(void *parameters)
 {
-	/*  Declare & Initialize Task Function variables */
 	g_task_led_cnt = G_TASK_LED_CNT_INI;
-	
-	TickType_t last_wake_time;
-
-	/* The xLastWakeTime variable needs to be initialized with the current tick
-	   count. ws*/
-	last_wake_time = xTaskGetTickCount();
-
-	/* Print out: Task Initialized */
 	LOGGER_INFO(" ");
 	LOGGER_INFO("%s is running - Tick [mS] = %3d", pcTaskGetName(NULL), (int)xTaskGetTickCount());
-
 	HAL_GPIO_WritePin(task_led_dta.gpio_port, task_led_dta.pin, LED_OFF);
 
-	/* As per most tasks, this task is implemented in an infinite loop. */
 	for (;;)
 	{
 		/* Update Task Counter */
 		g_task_led_cnt++;
 
-		/* Run Task Statechart */
-    	task_led_statechart();
+	task_led_ev_t event_rx;
 
-    	/* We want this task to execute exactly every 50 milliseconds. */
-		vTaskDelayUntil(&last_wake_time, LED_TICK_DEL_MAX);
-	}
+	if (xQueueReceive(h_btn_led_q, &event_rx, LED_TICK_DEL_MAX) == pdPASS)
+	        {
+
+	            task_led_dta.event = event_rx;
+	            task_led_dta.flag = true;
+	        }
+	        else
+	        {
+
+	            task_led_dta.flag = false;
+	        }
+
+	    	task_led_statechart();
+		}
 }
+
+
+
 
 void task_led_statechart(void)
 {
