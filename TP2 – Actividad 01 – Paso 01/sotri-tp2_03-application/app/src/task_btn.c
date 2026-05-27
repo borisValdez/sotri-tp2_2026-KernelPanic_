@@ -47,6 +47,7 @@
 #include "task_btn_attribute.h"
 #include "task_led_attribute.h"
 #include "task_led_interface.h"
+#include "semphr.h"
 
 /********************** macros and definitions *******************************/
 #define G_TASK_BTN_CNT_INI	0ul
@@ -74,6 +75,7 @@ void task_btn_statechart(void);
 
 /********************** external data declaration ****************************/
 uint32_t g_task_btn_cnt;
+extern SemaphoreHandle_t h_btn_led_bin_sem;
 
 /********************** external functions definition ************************/
 /* Task BTN thread */
@@ -134,7 +136,8 @@ void task_btn_statechart(void)
 					/* Print out: Task execution */
 					LOGGER_INFO(" %s - BTN PRESSED", pcTaskGetName(NULL));
 
-					put_event_task_led(EV_LED_BLINK);
+					//put_event_task_led(EV_LED_BLINK);
+					xSemaphoreGive(h_btn_led_bin_sem);
 					task_btn_dta.state = ST_BTN_DOWN;
 				}
 				else
@@ -164,7 +167,7 @@ void task_btn_statechart(void)
 					/* Print out: Task execution */
 					LOGGER_INFO(" %s - BTN HOVER", pcTaskGetName(NULL));
 
-					put_event_task_led(EV_LED_OFF);
+					//put_event_task_led(EV_LED_OFF);
 					task_btn_dta.state = ST_BTN_UP;
 				}
 				else

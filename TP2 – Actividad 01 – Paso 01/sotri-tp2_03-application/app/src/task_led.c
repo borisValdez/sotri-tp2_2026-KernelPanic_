@@ -45,7 +45,7 @@
 #include "board.h"
 #include "app.h"
 #include "task_led_attribute.h"
-
+#include "semphr.h"
 /********************** macros and definitions *******************************/
 #define G_TASK_LED_CNT_INI	0ul
 
@@ -69,7 +69,7 @@ void task_led_statechart(void);
 
 /********************** external data declaration ****************************/
 uint32_t g_task_led_cnt;
-
+extern SemaphoreHandle_t h_btn_led_bin_sem;
 /********************** external functions definition ************************/
 /* Task LED thread */
 void task_led(void *parameters)
@@ -77,11 +77,11 @@ void task_led(void *parameters)
 	/*  Declare & Initialize Task Function variables */
 	g_task_led_cnt = G_TASK_LED_CNT_INI;
 	
-	TickType_t last_wake_time;
+	//TickType_t last_wake_time;
 
 	/* The xLastWakeTime variable needs to be initialized with the current tick
 	   count. ws*/
-	last_wake_time = xTaskGetTickCount();
+	//last_wake_time = xTaskGetTickCount();
 
 	/* Print out: Task Initialized */
 	LOGGER_INFO(" ");
@@ -89,18 +89,24 @@ void task_led(void *parameters)
 
 	HAL_GPIO_WritePin(task_led_dta.gpio_port, task_led_dta.pin, LED_OFF);
 
+
 	/* As per most tasks, this task is implemented in an infinite loop. */
-	for (;;)
-	{
-		/* Update Task Counter */
-		g_task_led_cnt++;
 
-		/* Run Task Statechart */
-    	task_led_statechart();
+		for (;;)
+			{
 
-    	/* We want this task to execute exactly every 50 milliseconds. */
-		vTaskDelayUntil(&last_wake_time, LED_TICK_DEL_MAX);
-	}
+				if (xSemaphoreTake(h_btn_led_bin_sem, portMAX_DELAY) == pdTRUE)
+				{
+					/* Update Task Counter */
+					g_task_led_cnt++;
+
+					/* Cambiamos el estado del LED (Toggle) */
+					HAL_GPIO_TogglePin(task_led_dta.gpio_port, task_led_dta.pin);
+
+					/* Print out: Task execution */
+					LOGGER_INFO(" %s - LED TOGGLE", pcTaskGetName(NULL));
+				}
+			}
 }
 
 void task_led_statechart(void)
