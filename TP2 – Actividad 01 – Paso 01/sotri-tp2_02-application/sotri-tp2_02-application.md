@@ -119,6 +119,14 @@ El comportamiento del *Scheduler* ante colas saturadas o vacías depende directa
 | :--- | :--- | :--- |
 | **Múltiples Tareas Bloqueadas por Lectura** | Una cola vacía recibe finalmente un dato. | El kernel desbloquea de manera inmediata a **la tarea de mayor prioridad** de la lista de espera. Si las tareas poseen la misma prioridad, se desbloquea la que lleve más tiempo esperando (orden FIFO de bloqueo). |
 | **Múltiples Tareas Bloqueadas por Escritura** | Una cola llena libera un espacio (se lee un dato). | El kernel permite escribir de inmediato a **la tarea de mayor prioridad** que estaba esperando para transmitir. |
-| **Tarea Lectora de Alta Prioridad** | Lee continuamente de la cola. | Tan pronto como una tarea de menor prioridad introduce un elemento en la cola, el planificador desaloja (*preemption*) a la tarea de baja prioridad para otorgarle la CPU a la lectora de alta prioridad, procesando el mensaje en tiempo real. |
+| **Tarea Lectora de Alta Prioridad** | Lee continuamente de la cola. | Tan pronto como una tarea de menor prioridad introduce un elemento en la cola, el planificador desaloja a la tarea de baja prioridad para otorgarle la CPU a la lectora de alta prioridad, procesando el mensaje en tiempo real. |
+
+## Paso 03: Observaciones del Comportamiento (Sincronización con Colas)
+
+Al modificar el mecanismo de comunicación entre `task_btn` y `task_led` para utilizar una Cola (Queue), se observaron los siguientes comportamientos durante la depuración:
+
+1. **Eficiencia de CPU (Bloqueo):** La tarea `task_led` ahora utiliza la función bloqueante `xQueueReceive()`. Esto significa que mientras no haya eventos en la cola, la tarea pasa al estado *Blocked* y no consume tiempo de procesamiento, a diferencia de un sistema de *polling* tradicional con variables globales.
+2. **Reactividad Inmediata:** Al presionar el botón físico, `task_btn` ejecuta un `xQueueSend()`. Esto despierta de forma instantánea a `task_led` si estaba esperando un dato, logrando que la transición de estado (y el encendido/parpadeo del LED) ocurra con latencia casi nula.
+3. **Robustez ante Múltiples Pulsaciones :** Al ser una cola de tamaño mayor a 1, si el botón se presiona varias veces muy rápido, los eventos se "encolan" de forma ordenada (FIFO). El sistema no pierde ninguna pulsación (no hay sobreescritura destructiva a menos que la cola se llene por completo), procesando los eventos uno detrás del otro de manera determinista.
 
 

@@ -28,3 +28,12 @@ En ambos casos, se debe evaluar el parámetro `pxHigherPriorityTaskWoken` y, si 
 FreeRTOS permite el anidamiento de interrupciones (una interrupción puede ser interrumpida por otra más prioritaria) basándose en dos constantes definidas en `FreeRTOSConfig.h`:
 1. `configMAX_SYSCALL_INTERRUPT_PRIORITY`: Define la prioridad máxima de interrupción desde la cual se pueden llamar funciones de la API de FreeRTOS.
 2. Interrupciones con una prioridad estrictamente **mayor** (numéricamente menor en la arquitectura ARM Cortex-M) a este límite nunca serán retrasadas por el RTOS, pero **tienen estrictamente prohibido** usar cualquier función de la API de FreeRTOS.
+
+## Paso 03: Observaciones del Comportamiento (Interrupciones y Semáforo Binario)
+
+Al eliminar el *polling* y pasar a atender el botón mediante interrupciones externas (EXTI), sincronizándolo con un Semáforo Binario, se observó lo siguiente:
+
+1. **Eliminación del Polling:** La tarea que consultaba continuamente el estado del botón (`task_btn`) ya no es necesaria para leer el pin. El hardware dispara la ISR (`HAL_GPIO_EXTI_Callback`) solo cuando ocurre el evento real (flanco del botón), ahorrando drásticamente recursos de CPU.
+2. **Uso de la API FromISR:** Dentro de la ISR se utiliza `xSemaphoreGiveFromISR()` para entregar el token. Esto señala a la tarea encargada del LED que el evento ocurrió, delegando el procesamiento fuera de la interrupción (Deferred Interrupt Processing).
+3. **Cambio de Contexto Inmediato:** Gracias al uso de la variable `xHigherPriorityTaskWoken` y la llamada a `portYIELD_FROM_ISR()` al final de la rutina de interrupción, el *Scheduler* fuerza un cambio de contexto inmediato. La tarea bloqueada en `xSemaphoreTake` despierta en el instante en que la ISR termina, logrando una reactividad de hardware en tiempo real.
+4. **Efecto de los Rebotes Mecánicos:** Dado que el botón mecánico genera rebotes físicos (múltiples flancos en milisegundos), la interrupción se dispara varias veces casi al instante. Sin embargo, al usar un semáforo binario, el valor máximo es 1. Por lo tanto, el sistema es naturalmente más resistente a acumular pulsaciones falsas en comparación a si se hubiera usado una cola, actuando como un simple gatillo (trigger).
