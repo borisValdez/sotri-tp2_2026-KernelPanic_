@@ -7,118 +7,191 @@
 | e2620  | Valdez, Boris Cristian | 28/05 | Semana 06 |
 
 
-## Actividad 02 - Paso 02: Gestión y Funcionamiento de Colas (Queues) en FreeRTOS
-
-Este documento detalla los aspectos teóricos y prácticos del uso de Colas (Queues) en el Kernel de FreeRTOS, consolidados a partir de la experiencia de depuración en la plataforma STM32.
+### Actividad 01 - Análisis del Código Fuente Base (`sotri-tp2_01-application`)
 
 ---
 
-## 1. Creación y Eliminación de Colas
+## 1. Análisis y Explicación del Funcionamiento de los Archivos Fuente
 
-### ¿Cómo crear una Cola?
-Para crear una cola en FreeRTOS se utiliza la función `xQueueCreate()`. Esta función reserva dinámicamente la memoria RAM necesaria en el *Heap* del sistema para la estructura de control de la cola y el almacenamiento de sus elementos.
+### A. `startup_stm32f446retx.s`
+Es el archivo de arranque del sistema escrito en lenguaje ensamblador (`ARM assembly`). Sus funciones principales son:
+* **Definición de la Tabla de Vectores:** Define la tabla `g_pfnVectors` que asocia cada interrupción física o excepción del núcleo (como Reset, HardFault, SysTick) con su respectiva función de servicio (ISR).
+* **Configuración del Entorno de Ejecución en C:** Inicializa el puntero de pila (`Stack Pointer` o `SP`) apuntando al final de la RAM (`_estack`).
+* **Inicialización de Memoria:** Copia los valores iniciales de las variables globales de la sección `.data` desde la memoria Flash a la RAM, y limpia (escribe con ceros) la sección `.bss` correspondiente a variables no inicializadas.
+* **Salto al Código de Aplicación:** Llama a la función de inicialización del sistema de bajo nivel `SystemInit` y posteriormente salta al punto de entrada del programa en C (`main`).
 
-* **Sintaxis básica:**
-    ```c
-    QueueHandle_t xQueue;
-    xQueue = xQueueCreate(uxQueueLength, uxItemSize);
-    ```
-* **Parámetros:**
-    * `uxQueueLength`: El número máximo de elementos que la cola puede albergar simultáneamente.
-    * `uxItemSize`: El tamaño en bytes de cada elemento (se recomienda usar el operador `sizeof()`).
-* **Retorno:** Devuelve un manejador del tipo `QueueHandle_t`. Si no hay suficiente memoria en el *Heap*, retorna `NULL`.
+### B. `main.c`
+Es el archivo principal que gobierna el ciclo de vida inicial de la aplicación. Se encarga de:
+* **Inicialización de la HAL:** Llama a `HAL_Init()` para configurar los periféricos básicos de abstracción de hardware, la estructura de prioridades de las interrupciones (NVIC) y la base de tiempo.
+* **Configuración del Árbol de Relojes:** Ejecuta `SystemClock_Config()` para establecer las frecuencias de operación del núcleo y de los buses periféricos (AHB/APB).
+* **Inicialización de Periféricos Propios:** Llama a las funciones autogeneradas como `MX_GPIO_Init()` y `MX_USART2_UART_Init()` para dejar los pines de E/S y el puerto serie listos para operar.
+* **Creación de Objetos del RTOS:** Mediante la API de abstracción CMSIS-RTOS, define y reserva la memoria para el hilo por defecto (`defaultTask`) usando `osThreadCreate()`.
+* **Lanzamiento del Sistema Operativo:** Llama a `osKernelStart()` para delegar el control de la CPU al Planificador (Scheduler).
 
-### ¿Cómo eliminar una Cola?
-Para liberar los recursos asociados a una cola cuando ya no se requiere su existencia en el sistema, se utiliza la función `vQueueDelete()`.
+### C. `stm32f4xx_it.c`
+Contiene los manejadores de interrupciones (`Interrupt Service Routines - ISR`) del sistema. En este archivo se encuentran tanto las excepciones del núcleo ARM (como `NMI_Handler`, `HardFault_Handler`, etc.) como las interrupciones de periféricos específicos de ST. 
+* En este diseño particular, destaca el `TIM1_UP_TIM10_IRQHandler`, que captura los desbordamientos de hardware del temporizador TIM1 y los deriva a la función abstracta `HAL_TIM_IRQHandler()`.
 
-* **Sintaxis básica:**
-    ```c
-    vQueueDelete(xQueue);
-    ```
-* **Efecto:** Libera la memoria RAM previamente asignada. **Nota crítica:** No se debe intentar acceder a una cola ni realizar operaciones sobre ella (escribir/leer) después de haber sido eliminada, ya que provocará una falla de hardware (*HardFault*).
+### D. `FreeRTOSConfig.h`
+Es el archivo de cabecera que parametriza y adapta el comportamiento del núcleo de FreeRTOS. Define directivas de precompilación críticas como:
+* `configCPU_CLOCK_HZ`: Frecuencia del reloj del procesador (enlazada dinámicamente a la variable `SystemCoreClock`).
+* `configTICK_RATE_HZ`: Definida en `1000`, lo que implica que el sistema operativo genera un "Tick" (conmutación y revisión de tareas) cada **1 milisegundo**.
+* `configMAX_PRIORITIES`: Define el número de niveles de prioridad de tareas disponibles (en este caso, `7`).
+* **Mapeo de interrupciones:** Redirecciona los vectores nativos de FreeRTOS hacia los nombres de vectores de interrupción de ARM CMSIS (ej. `#define vPortSVCHandler SVC_Handler` y `#define xPortPendSVHandler PendSV_Handler`).
 
----
-
-## 2. Gestión Interna y Transferencia de Datos
-
-### ¿Cómo gestiona una Cola los datos que contiene?
-FreeRTOS gestiona las colas bajo el principio **FIFO (First In, First Out)** por defecto: el primer dato en ingresar es el primero en ser consumido. 
-
-> **Mecanismo de Copia por Valor (Pass-by-Value):** > Al enviar un dato a la cola, el contenido completo de la variable se copia físicamente bit a bit dentro del espacio de memoria de la cola. Esto significa que la variable original puede ser modificada o salir de su ámbito (*scope*) inmediatamente después de enviarse sin alterar el dato almacenado en la cola. 
-> * *Excepción:* Si el tamaño del objeto es muy grande, por eficiencia se suele enviar un **puntero** al dato (Copia por Referencia), debiendo asegurar que la memoria a la que apunta permanezca válida.
-
-### ¿Cómo enviar datos a una Cola?
-FreeRTOS provee funciones específicas según el contexto de ejecución y el orden deseado:
-
-1.  **Hacia el final de la cola (FIFO estándar):** `xQueueSend()` o `xQueueSendToBack()`.
-2.  **Hacia el principio de la cola (LIFO / Urgencia):** `xQueueSendToFront()`.
-3.  **Desde una rutina de interrupción:** `xQueueSendFromISR()`, `xQueueSendToBackFromISR()`, `xQueueSendToFrontFromISR()`.
-
-* **Sintaxis en Tareas:**
-    ```c
-    BaseType_t xStatus;
-    xStatus = xQueueSend(xQueue, &dataToSend, xTicksToWait);
-    ```
-
-### ¿Cómo recibir datos de una Cola?
-Existen dos formas principales de extraer o leer información:
-
-1.  **Lectura con Extracción (`xQueueReceive`):** Copia el elemento de la cola en el búfer de destino y lo **elimina** de la cola, liberando espacio.
-2.  **Lectura de Inspección (`xQueuePeek`):** Copia el elemento del frente de la cola pero **no lo elimina**. Permite que otra tarea (o la misma) vuelva a leer el mismo elemento posteriormente.
-3.  **Desde interrupciones:** Se utiliza `xQueueReceiveFromISR()`.
-
-* **Sintaxis en Tareas:**
-    ```c
-    BaseType_t xStatus;
-    xStatus = xQueueReceive(xQueue, &receivedData, xTicksToWait);
-    ```
+### E. `freertos.c`
+Contiene la lógica de inicialización y soporte de las funciones de FreeRTOS generadas por el entorno gráfico STM32CubeMX. Debido a que el proyecto utiliza **asignación estática de memoria** para ciertas tareas base, este archivo implementa la función regulatoria obligatoria `vApplicationGetIdleTaskMemory()`. Esta función provee de manera estática las estructuras de control (`StaticTask_t`) y los buffers de pila (`StackType_t`) requeridos por el sistema operativo para crear la *Tarea Inactiva* (`Idle Task`).
 
 ---
 
-## 3. Bloqueos y Mecanismos Avanzados
+## 2. Evolución de las Variables `SysTick` y `SystemCoreClock`
 
-### ¿Qué significa bloquearse en una Cola?
-El bloqueo es el mecanismo mediante el cual FreeRTOS implementa la eficiencia energética y temporal del sistema multitarea. Ocurre en dos situaciones:
+A lo largo de la secuencia de arranque, el comportamiento y configuración de estas variables evoluciona de la siguiente manera:
 
-* **Bloqueo por Lectura:** Una tarea intenta leer de una cola que está **vacía**.
-* **Bloqueo por Escritura:** Una tarea intenta escribir en una cola que está **llena**.
-
-En lugar de consumir ciclos de CPU en un bucle de consulta activa (*polling*), la tarea ingresa al estado **Blocked**. El planificador (*Scheduler*) le quita el control de la CPU y le permite ejecutar a otras tareas listas. La tarea se desbloqueará inmediatamente cuando ocurra una de dos condiciones:
-1.  La cola reciba un elemento (si estaba vacía) o libere un espacio (si estaba llena).
-2.  Transcurra el tiempo máximo de espera definido por el parámetro `xTicksToWait`.
-
-### ¿Cómo bloquearse en varias Colas?
-Para que una única tarea pueda suspenderse a la espera de datos provenientes de múltiples colas simultáneamente, FreeRTOS implementa los **Conjuntos de Colas (Queue Sets)**.
-
-* **Procedimiento:**
-    1. Se crea el conjunto con `xQueueCreateSet()`.
-    2. Se añaden las colas deseadas al conjunto usando `xQueueAddToSet()`.
-    3. La tarea se bloquea llamando a `xQueueSelectFromSet()`. Cuando cualquiera de las colas del conjunto reciba un dato, el conjunto se activará y devolverá el manejador de la cola que provocó el desbloqueo, permitiendo a la tarea saber exactamente de dónde leer.
-
-### ¿Cómo sobrescribir datos en una Cola?
-Cuando una cola posee un tamaño estricto de **1 solo elemento** (`uxQueueLength = 1`), se puede utilizar la función `xQueueOverwrite()`.
-
-* **Funcionamiento:** Si la cola está vacía, escribe el dato normalmente. Si la cola ya contiene un dato, reemplaza/pisa el valor viejo con el nuevo. Esta función nunca se bloquea (no tiene parámetro de tiempo de espera) y es ideal para actualizar variables de estado continuas (ej. lecturas de sensores de temperatura).
-
-### ¿Cómo vaciar una Cola?
-Para resetear por completo el estado de una cola y remover todos los elementos pendientes de lectura de forma instantánea, se utiliza `xQueueReset()`.
-
-* **Sintaxis:**
-    ```c
-    xQueueReset(xQueue);
-    ```
-* **Efecto:** La cola vuelve a quedar vacía (`uxMessagesWaiting = 0`). Cualquier tarea que estuviese bloqueada esperando escribir en ella se desbloqueará si la cola pasa a estar disponible.
-
----
-
-## 4. Impacto de las Prioridades en el Acceso a Colas
-
-El comportamiento del *Scheduler* ante colas saturadas o vacías depende directamente de la prioridad asignada a las tareas que interactúan con ellas:
-
-| Escenario | Condición del Sistema | Efecto de las Prioridades |
+| Etapa del Programa | Estado de `SystemCoreClock` | Estado de Hardware `SysTick` |
 | :--- | :--- | :--- |
-| **Múltiples Tareas Bloqueadas por Lectura** | Una cola vacía recibe finalmente un dato. | El kernel desbloquea de manera inmediata a **la tarea de mayor prioridad** de la lista de espera. Si las tareas poseen la misma prioridad, se desbloquea la que lleve más tiempo esperando (orden FIFO de bloqueo). |
-| **Múltiples Tareas Bloqueadas por Escritura** | Una cola llena libera un espacio (se lee un dato). | El kernel permite escribir de inmediato a **la tarea de mayor prioridad** que estaba esperando para transmitir. |
-| **Tarea Lectora de Alta Prioridad** | Lee continuamente de la cola. | Tan pronto como una tarea de menor prioridad introduce un elemento en la cola, el planificador desaloja (*preemption*) a la tarea de baja prioridad para otorgarle la CPU a la lectora de alta prioridad, procesando el mensaje en tiempo real. |
+| **Reset_Handler** | Posee un valor por defecto inicial (generalmente ligado al oscilador interno básico HSI de 16 MHz). | Deshabilitado / Sin configurar por hardware. |
+| **Post `SystemClock_Config()`** | Se actualiza internamente al valor de la frecuencia máxima configurada mediante el PLL (ej. 180 MHz para STM32F446). | Sigue deshabilitado para el sistema operativo. La HAL utiliza el **TIM1** como base alternativa. |
+| **Post `osKernelStart()`** | Se mantiene fijo en el valor configurado. Es leído por FreeRTOS para calcular las temporizaciones. | **Activado e Inicializado**. El planificador configura el registro de recarga de SysTick para interrumpir exactamente cada 1 ms en base a `SystemCoreClock`. |
+
+---
+
+## 3. Comportamiento Secuencial del Programa (Desde Reset hasta el Bucle Principal)
+
+La línea de tiempo lógica de la CPU desde que recibe energía o se presiona el botón Reset se resume en los siguientes pasos consecutivos:
+
+1. El hardware lee el vector de Reset y salta a la dirección de **`Reset_Handler`** en `startup_stm32f446retx.s`.
+2. Se configura el puntero de pila y se realiza la inicialización física de la memoria (copia de `.data` y vaciado de `.bss`).
+3. Se invoca a `SystemInit` para configuraciones básicas de registros del procesador y se salta inmediatamente a **`main()`**.
+4. En `main()`, se inicializa el ecosistema ST con `HAL_Init()` y se eleva la frecuencia de reloj al máximo mediante `SystemClock_Config()`.
+5. Se configuran los puertos de entrada/salida y comunicaciones (`MX_GPIO_Init()`, `MX_USART2_UART_Init()`).
+6. Se solicita formalmente al kernel la creación del hilo de ejecución por defecto mediante `osThreadCreate(osThread(defaultTask), NULL)`. En este punto, FreeRTOS ubica la tarea en la lista de tareas listas (`Ready List`).
+7. El programa ejecuta **`osKernelStart()`**.
+8. **Punto de Quiebre / Bloqueo del Flujo Lineal:** Al arrancar el planificador, FreeRTOS configura las interrupciones del sistema, activa el temporizador del núcleo (SysTick) y le otorga el control de la CPU a la tarea de mayor prioridad disponible (en este caso, `defaultTask`).
+9. **Consecuencia Práctica:** Como el planificador toma el control absoluto de los saltos de CPU, **el programa nunca llega a ejecutar la línea `while (1)`** ubicada al final de la función `main()`. El flujo se vuelve concurrente dentro de la función cíclica `StartDefaultTask()`.
+
+---
+
+## 4. Interacción de `SysTick`, `TIM1` con FreeRTOS y las Librerías HAL
+
+En un sistema convencional de STM32 sin RTOS, la librería HAL monopoliza el uso del temporizador interno **SysTick** de ARM para generar retardos (`HAL_Delay()`) y gestionar los límites de tiempo (*timeouts*) de periféricos. Al incorporar FreeRTOS, se produce un conflicto, ya que el sistema operativo requiere de forma obligatoria y exclusiva el SysTick para conmutar tareas y llevar el tiempo del sistema.
+
+Para resolver este conflicto, el proyecto implementa la metodología recomendada por STMicroelectronics:
+
+### A. Rol del `SysTick` con FreeRTOS
+El temporizador SysTick se asigna de forma exclusiva al núcleo de FreeRTOS. Corre de manera ininterrumpida y genera una excepción de hardware cada **1 milisegundo**. Cada vez que esta excepción ocurre:
+* Se ejecuta el manejador del port de FreeRTOS.
+* El sistema incrementa el contador de ticks global (`xTickCount`).
+* Se evalúa si alguna tarea bloqueada por tiempo debe despertar o si corresponde realizar un cambio de contexto por prioridad (*Time Slicing*).
+
+### B. Rol del `TIM1` con la Librería HAL
+Para que la HAL mantenga su independencia y sus funciones internas no sufran interferencias ni retrasos causados por el kernel del sistema operativo, se configura un temporizador de hardware de propósito general—en este caso específico, el **TIM1**—como la nueva base de tiempo de la HAL (*Timebase Source*).
+
+* **Mecanismo de Interacción:** Cada 1 milisegundo, el hardware de TIM1 se desborda y genera una interrupción que es capturada en `stm32f4xx_it.c` dentro de `TIM1_UP_TIM10_IRQHandler()`. Esta rutina invoca las funciones de actualización interna de ST:
+  
+```c
+void TIM1_UP_TIM10_IRQHandler(void)
+{
+  HAL_TIM_IRQHandler(&htim1);
+}
+```
+## Actividad 02 - Paso 08: Análisis del Código de la Aplicación (`app/` y `task/`)
+
+---
+
+## 1. Análisis Funcional de los Archivos de la Aplicación
+
+### A. `app.c` (Inicializador de la Aplicación)
+Es el módulo encargado de orquestar la creación de los componentes de software de alto nivel una vez que el hardware básico ya fue inicializado. 
+* **Función Principal (`app_init`):** Invoca a `app_it_init()` para preparar las interrupciones de la aplicación. Luego, utiliza la API nativa de FreeRTOS (`xTaskCreate`) para instanciar las dos tareas principales del sistema: `task_btn` ("Task BTN") y `task_led` ("Task LED").
+* **Configuración de Tareas:** A ambas tareas se les asigna una prioridad de `tskIDLE_PRIORITY + 1ul` (prioridad baja, justo por encima de la tarea inactiva) y se definen sus tamaños de pila (*Stack Depth*) como el doble del mínimo (`2 * configMINIMAL_STACK_SIZE`). El archivo hace uso de `configASSERT(pdPASS == ret)` para detener inmediatamente la CPU si el sistema operativo se queda sin memoria RAM (Heap) al intentar crear estos hilos.
+
+### B. `app_it.c` (Manejador de Interrupciones de la Aplicación)
+Este archivo centraliza las funciones de respuesta a eventos externos por interrupción que pertenecen a la lógica de la aplicación.
+* **Mecanismo de Captura:** Implementa la función de retrollamada de la HAL de ST: `HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)`. Cuando se presiona un botón físico configurado en modo interrupción externa (EXTI), el hardware salta aquí. 
+* **Lógica Interna:** El código evalúa si el pin que generó la interrupción coincide con el identificador del botón (`BTN_Pin`). Aunque en esta etapa base el botón se procesa principalmente por consulta periódica (*polling*), este archivo deja preparada la estructura para la migración hacia interrupciones en la Actividad 04.
+
+### C. `task_btn.c` (Tarea de Gestión del Botón)
+Implementa el ciclo de vida y comportamiento del botón de la placa de desarrollo. Su objetivo principal es leer el estado físico del pin del botón, filtrar el ruido eléctrico mediante software (*anti-bounce*) y notificar las pulsaciones válidas.
+* **Algoritmo:** Utiliza una estructura de datos interna (`task_btn_dta`) que almacena el estado actual de la máquina de estados, el evento detectado y una marca de tiempo (*tick*) obtenida con `xTaskGetTickCount()`. Cuando detecta una transición estable y válida, registra el log `BTN PRESSED` mediante el logger de la aplicación y despacha el evento de parpadeo invocando a `put_event_task_led(EV_LED_BLINK)`.
+
+### D. `task_led.c` (Tarea de Gestión del LED)
+Representa el hilo encargado de controlar el actuador visual (el LED indicador de la placa).
+* **Control de Tiempo Preciso:** En su bucle infinito, la tarea utiliza `vTaskDelayUntil(&last_wake_time, LED_TICK_DEL_MAX)`, asegurando que la tarea se ejecute de manera estrictamente periódica cada 50 milisegundos, sin importar el tiempo de procesamiento interno que consuma la CPU.
+* **Lógica:** Evalúa cíclicamente los cambios en la estructura de datos `task_led_dta`. Si el indicador `flag` es verdadero y el evento coincide con `EV_LED_BLINK`, cambia su estado interno y comanda al hardware mediante `HAL_GPIO_WritePin` para encender o apagar el pin físico asociado al LED.
+
+### E. `task_led_interface.c` (Interfaz de Comunicación)
+Este archivo actúa como una capa de abstracción o "puente" para que otras tareas interactúen con el LED sin necesidad de conocer los detalles de bajo nivel de su máquina de estados.
+* **Funcionamiento:** Implementa la función pública `put_event_task_led(task_led_ev_t event)`. Cuando es llamada (por ejemplo, desde `task_btn.c`), escribe directamente el evento recibido en la variable global `task_led_dta.event` y cambia el valor de `task_led_dta.flag = true` para indicarle a la tarea del LED que tiene un comando pendiente por procesar.
+
+### F. `freertos.c` (Hooks y Ganchos del Sistema Operativo)
+Contiene las funciones complementarias de diagnóstico y telemetría de FreeRTOS que se ejecutan bajo condiciones específicas del sistema:
+* **`vApplicationIdleHook`:** Se ejecuta de manera continua cada vez que no hay ninguna tarea de usuario lista para correr. Incrementa la variable global `g_task_idle_cnt`, la cual sirve para medir el porcentaje de tiempo libre o inactividad de la CPU.
+* **`vApplicationTickHook`:** Se ejecuta dentro del contexto de la interrupción del `SysTick` cada 1 ms. Incrementa el contador `g_app_tick_cnt` para métricas temporales de la aplicación.
+* **`vApplicationStackOverflowHook`:** Es un mecanismo de seguridad crítico. Si alguna de las tareas se excede del tamaño de pila asignado (`2 * configMINIMAL_STACK_SIZE`), el kernel detecta la corrupción de memoria, salta a este gancho y detiene la ejecución para evitar comportamientos erráticos.
+
+---
+
+## 2. Arquitectura de Comunicación e Interconexión entre Tareas
+
+En este proyecto base (`sotri-tp2_01-application`), el flujo de datos e instrucciones sigue un patrón de **Diseño Orientado a Eventos con Variables Globales Compartidas**.
+
+[ task_btn ] ---> Llama a ---> [ put_event_task_led() ] ---> Modifica ---> [ task_led_dta ] <--- Evalúa <--- [ task_led ]
 
 
+1. La tarea `task_btn` procesa la entrada del usuario de manera aislada.
+2. Al detectar una pulsación, delega la responsabilidad de comunicación a la función interfaz `put_event_task_led()`.
+3. Esta función modifica directamente una estructura de memoria global compartida (`task_led_dta`).
+4. En el siguiente ciclo de reactivación (cada 50 ms), la tarea `task_led` lee esa misma estructura global, detecta el cambio de bandera (`flag = true`), consume el evento y modifica el estado del periférico.
+
+---
+
+## 3. Análisis de las Máquinas de Estado (Statecharts)
+
+Ambas tareas basan su funcionamiento en el patrón de diseño de **Máquinas de Estado Ejecutadas hasta la Finalización (*Run-to-Completion Statecharts*)**.
+
+### Máquina de Estados del Botón (`task_btn.c`)
+Está diseñada para discriminar falsos contactos y ruidos eléctricos mediante transiciones temporizadas:
+* **`ST_BTN_UP` (Reposo/Suelto):** Estado inicial. El pin lee un nivel alto constante. Si se detecta un flanco descendente (`EV_BTN_DOWN`), guarda el tiempo actual del sistema operativo y transiciona a `ST_BTN_FALLING`.
+* **`ST_BTN_FALLING` (Validación de Bajada):** Espera que transcurra un tiempo de guarda máximo (`DEL_BTN_MAX`). Si al cumplirse el tiempo el botón sigue presionado, se confirma que no es un ruido eléctrico, genera el evento hacia el LED y pasa a `ST_BTN_DOWN`. Si el botón se soltó antes, asume que fue ruido y regresa a `ST_BTN_UP`.
+* **`ST_BTN_DOWN` (Presionado Estable):** Se mantiene aquí mientras el usuario sostenga el botón físico. Al detectar la liberación (`EV_BTN_UP`), guarda el tiempo y pasa a `ST_BTN_RISING`.
+* **`ST_BTN_RISING` (Validación de Subida):** Monitorea el desprendimiento del botón para evitar falsas pulsaciones dobles causadas por el rebote mecánico del resorte del pulsador. Al estabilizarse, regresa al estado de reposo `ST_BTN_UP`.
+
+### Máquina de Estados del LED (`task_led.c`)
+Es una máquina reactiva simple que responde a las solicitudes validadas por el botón:
+* **`ST_LED_OFF` (Apagado):** El LED permanece apagado. Si la bandera de la interfaz es verdadera (`flag == true`) y el evento recibido es `EV_LED_BLINK`, la tarea apaga la bandera para consumir el comando, enciende el LED físico usando la HAL, inicializa el temporizador y pasa a `ST_LED_BLINK`.
+* **`ST_LED_BLINK` (Parpadeo Cíclico):** El LED conmuta su estado de manera regular. Si se recibe un evento de apagado (`EV_LED_OFF`), apaga el periférico y regresa a `ST_LED_OFF`.
+
+---
+
+## 4. Diagnóstico Crítico: Condición de Carrera (*Race Condition*)
+
+A pesar de que el código base funciona bajo condiciones ideales de laboratorio, presenta un **defecto de diseño crítico** desde la perspectiva de los Sistemas Operativos en Tiempo Real: **La falta de exclusión mutua**.
+
+* **El Problema:** La función `put_event_task_led()` modifica las variables `task_led_dta.event` y `task_led_dta.flag` de manera directa en la memoria RAM. Al mismo tiempo, la tarea `task_led` lee y escribe sobre esos mismos campos de memoria dentro de su bucle.
+* **El Peligro (Condición de Carrera):** Si las prioridades de las tareas cambiasen o si esta función se invocara desde una rutina de interrupción (ISR) en medio de la lectura de la tarea del LED, se podría producir una **corrupción de datos**. Por ejemplo, la tarea del LED podría leer la bandera `flag = true` pero evaluar un evento incompleto o viejo si es interrumpida a mitad de la escritura.
+* **Conclusión:** Este diseño evidencia de forma didáctica por qué **no se deben utilizar variables globales desprotegidas** para comunicar tareas en un RTOS. Esto justifica y sienta las bases para las siguientes actividades del práctico, donde se reemplazará este mecanismo inseguro por primitivas seguras de FreeRTOS como **Colas de Mensajes (`Queues`)** y **Semáforos Binarios**.
+
+
+## 5. Actividad 02 - Paso 03: Modificación del Mecanismo de Comunicación y Observaciones
+
+### A. Implementación de la Cola (Queue) en el Código
+Se eliminó el acoplamiento directo por variables globales desprotegidas entre `task_btn.c` y `task_led.c`. En su lugar, se implementó una cola nativa de FreeRTOS (`xQueueLed`) administrada mediante las siguientes primitivas:
+* **Creación:** Se instanció en `app.c` mediante `xQueueCreate(5, sizeof(task_led_ev_t))`, reservando un buffer FIFO seguro para un máximo de 5 eventos concurrentes.
+* **Transmisión (Productor):** La función de interfaz `put_event_task_led()` fue modificada para ejecutar `xQueueSend(xQueueLed, &event, 0)`. Se configuró un tiempo de espera (*Ticks to Wait*) de `0` (no bloqueante). Esto garantiza que la tarea del botón (`task_btn`) jamás quede suspendida o penalice la experiencia del usuario (latencia de UI) en caso de que la cola experimente una saturación temporal.
+* **Recepción (Consumidor):** En el bucle principal de `task_led.c`, se sustituyó la temporización rígida de `vTaskDelayUntil` por `xQueueReceive(xQueueLed, &event_rx, LED_TICK_DEL_MAX)`. 
+
+### B. Comportamiento Observado durante la Depuración (STM32)
+
+Al compilar, flashear y ejecutar el proyecto modificado utilizando el depurador y logs de la consola serial, se constataron las siguientes métricas y comportamientos dinámicos:
+
+1. **Eliminación de la Condición de Carrera (*Race Condition*):** A diferencia del Paso 01, donde la variable `task_led_dta.flag` era modificada de manera asincrónica e insegura por dos hilos concurrentes, las operaciones de lectura y escritura actuales ocurren bajo la protección interna de secciones críticas del Kernel de FreeRTOS. El acceso a la memoria compartida está completamente serializado.
+
+2. **Reactividad Inmediata ante Eventos:**
+   Cuando el sistema está en estado de reposo (`ST_LED_OFF`), la tarea del LED ya no se despierta innecesariamente cada 50 ms para evaluar una bandera falsa en RAM. En su lugar, permanece en estado **Blocked** (bloqueada eficientemente en la cola). Al presionar el botón físico, `xQueueSend` deposita el evento e inmediatamente el planificador (*Scheduler*) despierta a `task_led`, logrando un tiempo de respuesta al parpadeo prácticamente instantáneo.
+
+3. **Mantenimiento de la Periodicidad en el Parpadeo:**
+   Se comprobó que al transicionar al estado `ST_LED_BLINK`, la cola no se satura ni se desborda. Dado que el evento de parpadeo se procesa una sola vez, las reactivaciones subsiguientes de la máquina de estados ocurren por el vencimiento del *Timeout* de la función `xQueueReceive` (fijado en 50 ms a través de `LED_TICK_DEL_MAX`). Cuando el estado es "Blink" y la función retorna `pdFALSE` (indicando que no llegó un evento nuevo), la máquina de estados ejecuta con éxito la conmutación periódica del pin físico del LED.
+
+4. **Robustez ante Pulsaciones Múltiples:**
+   Al presionar el botón de forma repetida y caótica, los eventos se encolan ordenadamente en el buffer FIFO. Al ser una cola de longitud superior a 1, el sistema tolera ráfagas de eventos sin experimentar pérdidas de datos ni desbordamientos de memoria, procesando las transiciones de estado de forma determinista y secuencial.
