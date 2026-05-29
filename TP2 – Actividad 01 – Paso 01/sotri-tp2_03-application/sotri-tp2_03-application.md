@@ -42,3 +42,11 @@ A través de la experimentación y depuración, se observan las siguientes difer
 | **Bloqueo** | La tarea espera a que el evento ocurra (1 señal). | La tarea espera hasta que al menos un recurso esté libre. |
 
 ---
+
+## Paso 03: Observaciones del Comportamiento (Sincronización con Semáforo Binario)
+
+Al modificar el mecanismo de comunicación entre `task_btn` y `task_led` para utilizar un Semáforo Binario en lugar de una cola, se observó lo siguiente durante la depuración:
+
+1. **Bloqueo Puro y Eficiencia (Non-Polling):** La tarea `task_led` ahora utiliza `xSemaphoreTake(h_btn_led_bin_sem, portMAX_DELAY)`. Esto significa que la tarea entra en un estado de bloqueo absoluto (*Blocked state*) y no consume ciclos de CPU mientras el botón no sea presionado, optimizando enormemente el sistema frente al uso de banderas (flags) por software.
+2. **Sincronización Directa (Trigger):** En el momento exacto en que `task_btn` valida la pulsación (pasando su delay de anti-rebote) y ejecuta `xSemaphoreGive()`, el planificador (Scheduler) de FreeRTOS despierta de inmediato a la tarea del LED para que conmute (*toggle*) su estado. La latencia de sincronización es mínima.
+3. **Ausencia de Memoria Acumulativa (Sin Buffering):** La mayor diferencia observada empíricamente respecto a la Cola (Actividad 02) es que el semáforo binario solo tiene valor `0` o `1`. Si la tarea del botón ejecutara múltiples `Give` de manera extremadamente rápida sin que el LED hiciera un `Take`, el semáforo no "cuenta" ni "encola" las pulsaciones (se clava en 1). Esto demuestra que es ideal para sincronización unidireccional de eventos simples, pero no para transferencia de datos en ráfaga.
